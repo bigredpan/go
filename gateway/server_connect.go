@@ -1,0 +1,69 @@
+package main
+
+import (
+	"fmt"
+	"github.com/gorilla/websocket"
+	"log"
+
+	"net/url"
+	"time"
+)
+
+type MasterServerConnection struct {
+	identifier string
+	tag        string
+	host       string
+	conn       *websocket.Conn
+	ping       int32
+}
+
+func (c MasterServerConnection) connect() {
+	u := url.URL{Scheme: "ws", Host: c.host, Path: "/gateway"}
+	fmt.Println("u %d", u)
+	var dialer *websocket.Dialer
+	conn, _, err := dialer.Dial(u.String(), map[string][]string{"Cookie": {fmt.Sprint("id=%s", c.identifier), fmt.Sprint("tag=%s", c.tag)}})
+	c.conn = conn
+	if err != nil {
+		log.Printf("connect error: %s", err)
+		c.reconnect()
+		return
+	}
+	c.onConnect()
+	go c.update()
+}
+
+func (c MasterServerConnection) reconnect() {
+	time.AfterFunc(2*time.Second, c.connect)
+}
+
+func (c MasterServerConnection) update() {
+	for {
+		_, message, err := c.conn.ReadMessage()
+		if err != nil {
+			log.Printf("read:", err)
+			c.onDisconnect()
+			c.reconnect()
+			return
+		}
+		c.onReadMessage(message)
+	}
+}
+
+func (c MasterServerConnection) onConnect() {
+	Gateway().onMasterConnect(c)
+}
+
+func (c MasterServerConnection) onDisconnect() {
+
+}
+
+func (c MasterServerConnection) onReadMessage(message []byte) {
+	log.Printf("received: %s\n", message)
+}
+
+func (c MasterServerConnection) writeMessage(message []byte) {
+	err := c.conn.WriteMessage(websocket.TextMessage, message)
+	if err != nil {
+		log.Println("write:", err)
+	}
+}
