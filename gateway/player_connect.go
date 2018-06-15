@@ -44,5 +44,12 @@ func (p PlayerConnect) onMessage(message []byte) {
 }
 
 func (p PlayerConnect) get_cookie(name string, def ...string) string {
-	return ""
+	c, err := p.request.Cookie(name)
+	if err != nil {
+		if len(def) > 0 {
+			return def[0]
+		}
+		return ""
+	}
+	return c.Value
 }

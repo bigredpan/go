@@ -1,9 +1,8 @@
 package main
 
 import (
-	"github.com/lunixbochs/struc"
-	"github.com/ugorji/go-msgpack"
-	"github.com/ugorji/go/codec"
+	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -13,7 +12,7 @@ type GatewayManager struct {
 	identifier    string
 	tag           string
 	runtime       string
-	master_server MasterServerConnection
+	master_server *MasterServerConnection
 }
 
 var manager *GatewayManager
@@ -23,6 +22,7 @@ func Gateway() *GatewayManager {
 	once.Do(func() {
 		manager = &GatewayManager{}
 	})
+	fmt.Println("Gateway", &manager, manager.master_server)
 	return manager
 }
 
@@ -42,13 +42,22 @@ func (g GatewayManager) update(second time.Duration) {
 	}
 }
 
-func (g GatewayManager) onMasterConnect(conn MasterServerConnection) {
-	g.master_server = conn
+func (g GatewayManager) onMasterConnect(conn *MasterServerConnection) {
+	manager.master_server = conn
+}
+
+func (g GatewayManager) onServerMessage(cmd uint16, id_list []int, body []byte) {
+
+	if cmd == PLAYER_CONNECT {
+		fmt.Println("PLAYER_CONNECT")
+		var data map[string]interface{}
+		err := json.Unmarshal(body, &data)
+		fmt.Println(err, data)
+		fmt.Println(string(body))
+	}
 }
 
 func (g GatewayManager) onPlayerConnect(connection PlayerConnect) {
-	log.Printf("onPlayerConnect")
-
 	device := connection.get_cookie("deviceId")
 	account := connection.get_cookie("account")
 	session := connection.get_cookie("session")
@@ -64,28 +73,21 @@ func (g GatewayManager) onPlayerConnect(connection PlayerConnect) {
 	// tz := connection.get_cookie("tz", "8")
 	// tz = max(-11, min(13, tz))
 	data := map[string]string{
-		"account":   account,
-		"session":   session,
-		"channel":   channel,
-		"device":    device,
-		"open_info": open_info,
-		"ip":        ip,
-		"create":    create,
-		"country":   country,
-		"tz":        tz,
-		"lang":      lang,
-		"server":    g.identifier,
-		"tag":       tag,
+		"account":    account,
+		"session":    session,
+		"channel":    channel,
+		"device":     device,
+		"open_info":  open_info,
+		"ip":         ip,
+		"create":     create,
+		"country":    country,
+		"tz":         tz,
+		"lang":       lang,
+		"server":     g.identifier,
+		"tag":        tag,
+		"config_md5": config_md5,
 	}
-	body, err := msgpack.Marshal(data)
-	var buf bytes.Buffer
-	header := struc.Pack(&buf, MessageHeader{"<HH", 0xf00a, 0})
-	message := header + body
+	body, _ := json.Marshal(data)
+	message := pack(PLAYER_CONNECT, nil, body)
 	g.master_server.writeMessage(message)
-}
-
-type MessageHeader struct {
-	fmt   string
-	cmd   int64
-	count int64
 }

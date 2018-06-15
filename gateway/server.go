@@ -8,7 +8,6 @@ package main
 
 import (
 	"flag"
-
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
