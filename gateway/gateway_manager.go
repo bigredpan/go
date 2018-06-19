@@ -88,6 +88,6 @@ func (g GatewayManager) onPlayerConnect(connection PlayerConnect) {
 		"config_md5": config_md5,
 	}
 	body, _ := json.Marshal(data)
-	message := pack(PLAYER_CONNECT, nil, body)
+	message := pack_cid(PLAYER_CONNECT, nil, body)
 	g.master_server.writeMessage(message)
 }

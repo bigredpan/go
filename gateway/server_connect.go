@@ -82,7 +82,19 @@ func (c MasterServerConnection) onDisconnect() {
 }
 
 func (c MasterServerConnection) onReadMessage(message []byte) {
-	cmd, id_list, body := unpack(message)
+	// header_size := HEADER_SIZE
+	cid := make([]byte, SERVER_CID_HEADER_SIZE)
+	msg := message
+	tag := message[0]
+	log.Printf("tag:", tag)
+	log.Printf("TAG:" + string(SERVER_CID_TAG[0]))
+	if tag == SERVER_CID_TAG[0] {
+		// header_size = SERVER_CID_HEADER_SIZE + HEADER_SIZE
+		cid = message[SERVER_CID_TAG_SIZE:SERVER_CID_HEADER_SIZE]
+		msg = message[SERVER_CID_HEADER_SIZE:]
+		log.Printf("cid:", cid)
+	}
+	cmd, id_list, body := unpack(msg)
 	Gateway().onServerMessage(cmd, id_list, body)
 }
 
