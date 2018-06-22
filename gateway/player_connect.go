@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
+	"time"
 )
 
 func playerHandle(w http.ResponseWriter, r *http.Request) {
@@ -13,7 +15,7 @@ func playerHandle(w http.ResponseWriter, r *http.Request) {
 		log.Print("upgrade:", err)
 		return
 	}
-	p := PlayerConnect{c, w, r, 0, nil, "", ""}
+	p := PlayerConnect{c, w, r, 0, nil, "", "", time.Now().Unix(), 0xff}
 	p.onConnect()
 	defer c.Close()
 	for {
@@ -34,6 +36,8 @@ type PlayerConnect struct {
 	login_data  map[string]string
 	room_server string
 	room        string
+	last_pong   int64
+	ping        int32
 }
 
 func (p *PlayerConnect) onConnect() {
@@ -41,7 +45,7 @@ func (p *PlayerConnect) onConnect() {
 }
 
 func (p *PlayerConnect) onDisconnect(err error) {
-
+	Gateway().onPlayerDisconnect(p)
 }
 
 func (p *PlayerConnect) onMessage(message []byte) {
@@ -58,14 +62,23 @@ func (p *PlayerConnect) onMessage(message []byte) {
 	cmd, _, _ := unpack(msg)
 
 	if cmd == PLAYER_PING {
-
+		p.on_client_ping(msg)
 	} else if cmd == NOTICE_PING {
 
 	} else {
-
 		Gateway().onPlayerMessage(p.player_id, msg, p_cid)
 	}
+}
 
+func (p *PlayerConnect) on_client_ping(message []byte) {
+	p.last_pong = time.Now().Unix()
+	p.writeMessage(message, nil)
+	_, _, data := unpack(message)
+	var msg interface{}
+	err := json.Unmarshal(data, &msg)
+	if err == nil {
+		p.ping = int32(msg.([]interface{})[1].(float64))
+	}
 }
 
 func (p *PlayerConnect) get_cookie(name string, def ...string) string {

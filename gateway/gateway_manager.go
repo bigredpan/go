@@ -158,6 +158,23 @@ func (g *GatewayManager) onPlayerConnect(connection *PlayerConnect) {
 	})
 }
 
+func (g *GatewayManager) onPlayerDisconnect(connection *PlayerConnect) {
+	player_id := connection.player_id
+	if player_id != 0 {
+		data, _ := json.Marshal(nil)
+		g.master_server.writeMessage(pack(PLAYER_DISCONNECT, []int{player_id}, data), nil)
+		if connection.room_server != "" {
+			room_server, ok := g.room_servers[connection.room_server]
+			if ok {
+				room_server.writeMessage(pack(PLAYER_DISCONNECT, []int{player_id}, data), nil)
+			}
+		}
+		delete(g.players, player_id)
+		connection.player_id = 0
+		log.Printf("Player disconnection:", player_id)
+	}
+}
+
 func (g *GatewayManager) gateway_servers(servers map[string]interface{}) {
 	room_servers := servers["rooms"].(map[string]interface{})
 	for server_id, server_tag := range room_servers {
