@@ -13,7 +13,7 @@ func playerHandle(w http.ResponseWriter, r *http.Request) {
 		log.Print("upgrade:", err)
 		return
 	}
-	p := PlayerConnect{c, w, r, 0, nil}
+	p := PlayerConnect{c, w, r, 0, nil, "", ""}
 	p.onConnect()
 	defer c.Close()
 	for {
@@ -27,11 +27,13 @@ func playerHandle(w http.ResponseWriter, r *http.Request) {
 }
 
 type PlayerConnect struct {
-	conn       *websocket.Conn
-	writer     http.ResponseWriter
-	request    *http.Request
-	player_id  int
-	login_data map[string]string
+	conn        *websocket.Conn
+	writer      http.ResponseWriter
+	request     *http.Request
+	player_id   int
+	login_data  map[string]string
+	room_server string
+	room        string
 }
 
 func (p *PlayerConnect) onConnect() {
@@ -44,18 +46,24 @@ func (p *PlayerConnect) onDisconnect(err error) {
 
 func (p *PlayerConnect) onMessage(message []byte) {
 	tag := message[0]
+	var msg []byte
+	var p_cid []byte
 	if tag == PLAYER_CID_TAG[0] {
-		msg := message[PLAYER_CID_HEADER_SIZE:]
-		cmd, _, _ := unpack(msg)
-		if cmd == PLAYER_PING {
+		msg = message[PLAYER_CID_HEADER_SIZE:]
+		p_cid = message[0:PLAYER_CID_HEADER_SIZE]
+	} else {
+		msg = message
+		p_cid = nil
+	}
+	cmd, _, _ := unpack(msg)
 
-		} else if cmd == NOTICE_PING {
+	if cmd == PLAYER_PING {
 
-		} else {
-			var p_cid []byte = message[0:PLAYER_CID_HEADER_SIZE]
+	} else if cmd == NOTICE_PING {
 
-			Gateway().onPlayerMessage(p.player_id, msg, p_cid)
-		}
+	} else {
+
+		Gateway().onPlayerMessage(p.player_id, msg, p_cid)
 	}
 
 }

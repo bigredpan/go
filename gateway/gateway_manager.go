@@ -2,7 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	// "log"
+	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -11,8 +12,9 @@ type GatewayManager struct {
 	identifier    string
 	tag           string
 	runtime       string
-	master_server *MasterServerConnection
+	master_server *ServerConnection
 	players       map[int]*PlayerConnect
+	room_servers  map[string]*ServerConnection
 }
 
 var manager *GatewayManager
@@ -21,7 +23,8 @@ var once sync.Once
 func Gateway() *GatewayManager {
 	once.Do(func() {
 		manager = &GatewayManager{}
-		manager.players = map[int]*PlayerConnect{}
+		manager.players = make(map[int]*PlayerConnect)
+		manager.room_servers = make(map[string]*ServerConnection)
 	})
 	return manager
 }
@@ -42,18 +45,21 @@ func (g *GatewayManager) update(second time.Duration) {
 	}
 }
 
-func (g *GatewayManager) onMasterConnect(conn *MasterServerConnection) {
-	manager.master_server = conn
+func (g *GatewayManager) onMasterConnect(server *ServerConnection) {
+	manager.master_server = server
 }
 
-func (g *GatewayManager) onServerMessage(message []byte, cid []byte) {
+func (g *GatewayManager) onServerMessage(server *ServerConnection, message []byte, cid []byte) {
 	cmd, id_list, body := unpack(message)
+
 	if cmd == PLAYER_PING {
 
 	} else if cmd == NOTICE_PING {
 
 	} else if cmd == CENTER_GATEWAY_SERVERS {
-		g.gateway_servers(json.UnMarshal(body))
+		var data = make(map[string]interface{})
+		json.Unmarshal(body, &data)
+		g.gateway_servers(data)
 	} else if cmd == CENTER_GATEWAY_CONFIG {
 		// self.gateway_config(Serializer.loads(body))
 	} else if cmd == CENTER_GATEWAY_SELF_KICK {
@@ -73,10 +79,13 @@ func (g *GatewayManager) onServerMessage(message []byte, cid []byte) {
 				connection, ok := g.players[player_id]
 				if ok {
 					if cmd == NOTICE_ROOM_JOIN {
-						// connection.room_server = server.identifier
-						// connection.room = Serializer.loads(body)["roomData"]["name"]
+						connection.room_server = server.identifier
+						var data = make(map[string]interface{})
+						json.Unmarshal(body, &data)
+						room_data := data["roomData"].(map[string]interface{})
+						connection.room = room_data["name"].(string)
 					} else if cmd == NOTICE_ROOM_RESULTS || cmd == NOTICE_ROOM_LEAVE {
-						// connection.room = ""
+						connection.room = ""
 						// del connection.ball_list[:]
 					}
 					connection.writeMessage(msg, cid)
@@ -91,7 +100,20 @@ func (g *GatewayManager) onPlayerMessage(player_id int, msg []byte, cid []byte) 
 	if cmd == PLAYER_BALL {
 		return
 	}
-	g.master_server.writeMessage(pack(cmd, []int{player_id}, body), cid)
+	var server *ServerConnection = nil
+	if cmd > CHAT_COMMAND {
+		server = nil
+	} else if cmd > MASTER_COMMAND {
+		server = g.master_server
+	} else if cmd > ROOM_COMMAND {
+		connection, _ := g.players[player_id]
+		if connection.room_server != "" {
+			server = g.room_servers[connection.room_server]
+		}
+	}
+	if server != nil {
+		server.writeMessage(pack(cmd, []int{player_id}, body), cid)
+	}
 }
 
 func (g *GatewayManager) onPlayerConnect(connection *PlayerConnect) {
@@ -134,4 +156,29 @@ func (g *GatewayManager) onPlayerConnect(connection *PlayerConnect) {
 		g.players[player_id] = connection
 		connection.writeMessage(pack(NOTICE_INIT, []int{player_id}, body), nil)
 	})
+}
+
+func (g *GatewayManager) gateway_servers(servers map[string]interface{}) {
+	room_servers := servers["rooms"].(map[string]interface{})
+	for server_id, server_tag := range room_servers {
+		if server_tag != g.tag {
+			continue
+		}
+		identifier := fmt.Sprintf("%s-%s", g.identifier, server_id)
+		_, ok := g.room_servers[identifier]
+		if !ok {
+			conn := NewServerConnection(identifier, g.tag, server_id)
+			g.add_room_server(conn)
+			conn.connect()
+		}
+	}
+}
+
+func (g *GatewayManager) add_room_server(server *ServerConnection) {
+	log.Printf("add_room_server", server.identifier)
+	old_conn, ok := g.room_servers[server.identifier]
+	if ok {
+		old_conn.do_close()
+	}
+	g.room_servers[server.identifier] = server
 }

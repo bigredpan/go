@@ -21,11 +21,9 @@ func main() {
 	flag.Parse()
 	log.SetFlags(0)
 	http.HandleFunc("/", playerHandle)
-	Gateway().init("dev", "gateway1", "sh")
-	m := new(MasterServerConnection)
-	m.identifier = "gateway1"
-	m.tag = "sh"
-	m.host = "localhost:20011"
+	Gateway().init("dev", "127.0.0.1:18011", "sh")
+	m := NewServerConnection("127.0.0.1:18011", "sh", "127.0.0.1:20011")
 	m.connect()
+	Gateway().master_server = m
 	log.Fatal(http.ListenAndServe(*addr, nil))
 }
