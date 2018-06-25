@@ -17,7 +17,7 @@ func playerHandle(w http.ResponseWriter, r *http.Request) {
 	}
 	p := PlayerConnect{c, w, r, 0, nil, "", "", time.Now().Unix(), 0xff}
 	p.onConnect()
-	defer c.Close()
+	defer p.conn.Close()
 	for {
 		_, message, err := c.ReadMessage()
 		if err != nil {
@@ -38,6 +38,10 @@ type PlayerConnect struct {
 	room        string
 	last_pong   int64
 	ping        int32
+}
+
+func (p *PlayerConnect) do_close() {
+	p.conn.Close()
 }
 
 func (p *PlayerConnect) onConnect() {

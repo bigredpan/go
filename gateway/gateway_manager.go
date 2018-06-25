@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,6 +16,7 @@ type GatewayManager struct {
 	master_server *ServerConnection
 	players       map[int]*PlayerConnect
 	room_servers  map[string]*ServerConnection
+	chat_server   *ServerConnection
 }
 
 var manager *GatewayManager
@@ -63,9 +65,9 @@ func (g *GatewayManager) onServerMessage(server *ServerConnection, message []byt
 	} else if cmd == CENTER_GATEWAY_CONFIG {
 		// self.gateway_config(Serializer.loads(body))
 	} else if cmd == CENTER_GATEWAY_SELF_KICK {
-		// self.gateway_kick(id_list[0], CloseReasons.ERROR_SELF_KICK)
+		g.gateway_kick(id_list[0], "ERROR_SELF_KICK")
 	} else if cmd == CENTER_GATEWAY_KICK {
-		// self.gateway_kick(id_list[0], CloseReasons.ERROR_PLAYER_KICK)
+		g.gateway_kick(id_list[0], "ERROR_PLAYER_KICK")
 	} else {
 		msg := pack(cmd, nil, body)
 
@@ -102,7 +104,7 @@ func (g *GatewayManager) onPlayerMessage(player_id int, msg []byte, cid []byte) 
 	}
 	var server *ServerConnection = nil
 	if cmd > CHAT_COMMAND {
-		server = nil
+		server = g.chat_server
 	} else if cmd > MASTER_COMMAND {
 		server = g.master_server
 	} else if cmd > ROOM_COMMAND {
@@ -154,6 +156,10 @@ func (g *GatewayManager) onPlayerConnect(connection *PlayerConnect) {
 		connection.player_id = player_id
 		connection.login_data = data
 		g.players[player_id] = connection
+		if g.chat_server != nil {
+			data, _ := json.Marshal(nil)
+			g.chat_server.writeMessage(pack(PLAYER_CHAT_CONNECT, []int{player_id}, data), nil)
+		}
 		connection.writeMessage(pack(NOTICE_INIT, []int{player_id}, body), nil)
 	})
 }
@@ -169,6 +175,9 @@ func (g *GatewayManager) onPlayerDisconnect(connection *PlayerConnect) {
 				room_server.writeMessage(pack(PLAYER_DISCONNECT, []int{player_id}, data), nil)
 			}
 		}
+		if g.chat_server != nil {
+			g.chat_server.writeMessage(pack(PLAYER_CHAT_DISCONNECT, []int{player_id}, data), nil)
+		}
 		delete(g.players, player_id)
 		connection.player_id = 0
 		log.Printf("Player disconnection:", player_id)
@@ -177,6 +186,15 @@ func (g *GatewayManager) onPlayerDisconnect(connection *PlayerConnect) {
 
 func (g *GatewayManager) gateway_servers(servers map[string]interface{}) {
 	room_servers := servers["rooms"].(map[string]interface{})
+
+	for identifier, server := range g.room_servers {
+		server_id := identifier[strings.Index(identifier, "_")+1:]
+		_, ok := room_servers[server_id]
+		if !ok {
+			g.remove_room_server(server)
+		}
+	}
+
 	for server_id, server_tag := range room_servers {
 		if server_tag != g.tag {
 			continue
@@ -189,6 +207,20 @@ func (g *GatewayManager) gateway_servers(servers map[string]interface{}) {
 			conn.connect()
 		}
 	}
+
+	chat_server_id := servers["chat"].(string)
+	if chat_server_id != "" {
+		identifier := fmt.Sprintf("%s-%s", g.identifier, chat_server_id)
+		if g.chat_server != nil && g.chat_server.host != chat_server_id {
+			g.chat_server.do_close()
+			g.chat_server = nil
+		}
+		if g.chat_server == nil {
+			conn := NewServerConnection(identifier, g.tag, chat_server_id)
+			g.chat_server = conn
+			conn.connect()
+		}
+	}
 }
 
 func (g *GatewayManager) add_room_server(server *ServerConnection) {
@@ -198,4 +230,20 @@ func (g *GatewayManager) add_room_server(server *ServerConnection) {
 		old_conn.do_close()
 	}
 	g.room_servers[server.identifier] = server
+}
+
+func (g *GatewayManager) remove_room_server(server *ServerConnection) {
+	log.Printf("remove_room_server", server.identifier)
+	old_conn, ok := g.room_servers[server.identifier]
+	if ok {
+		old_conn.do_close()
+		delete(g.room_servers, server.identifier)
+	}
+}
+
+func (g *GatewayManager) gateway_kick(player_id int, reason string) {
+	connection, ok := g.players[player_id]
+	if ok {
+		connection.do_close()
+	}
 }
