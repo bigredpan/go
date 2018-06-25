@@ -40,7 +40,12 @@ type PlayerConnect struct {
 	ping        int32
 }
 
-func (p *PlayerConnect) do_close() {
+func (p *PlayerConnect) do_close(code int, msg string) {
+	log.Printf("PlayerConnect do_close ", code, msg)
+	cm := websocket.FormatCloseMessage(code, msg)
+	if err := p.conn.WriteMessage(websocket.CloseMessage, cm); err != nil {
+		log.Printf("PlayerConnect do_close error:", err)
+	}
 	p.conn.Close()
 }
 

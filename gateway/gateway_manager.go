@@ -65,9 +65,9 @@ func (g *GatewayManager) onServerMessage(server *ServerConnection, message []byt
 	} else if cmd == CENTER_GATEWAY_CONFIG {
 		// self.gateway_config(Serializer.loads(body))
 	} else if cmd == CENTER_GATEWAY_SELF_KICK {
-		g.gateway_kick(id_list[0], "ERROR_SELF_KICK")
+		g.gateway_kick(id_list[0], 4002, "self kick")
 	} else if cmd == CENTER_GATEWAY_KICK {
-		g.gateway_kick(id_list[0], "ERROR_PLAYER_KICK")
+		g.gateway_kick(id_list[0], 4007, "kick player")
 	} else {
 		msg := pack(cmd, nil, body)
 
@@ -131,6 +131,7 @@ func (g *GatewayManager) onPlayerConnect(connection *PlayerConnect) {
 	ip := connection.get_cookie("ip", "")
 	tag := connection.get_cookie("tag", "")
 	tz := "8"
+	log.Printf("onPlayerConnect", account, device)
 	// tz := connection.get_cookie("tz", "8")
 	// tz = max(-11, min(13, tz))
 	data := map[string]string{
@@ -152,15 +153,34 @@ func (g *GatewayManager) onPlayerConnect(connection *PlayerConnect) {
 	message := pack(PLAYER_CONNECT, nil, body)
 	g.master_server.fetch(message, func(msg []byte) {
 		_, id_list, body := unpack(msg)
-		player_id := id_list[0]
-		connection.player_id = player_id
-		connection.login_data = data
-		g.players[player_id] = connection
-		if g.chat_server != nil {
-			data, _ := json.Marshal(nil)
-			g.chat_server.writeMessage(pack(PLAYER_CHAT_CONNECT, []int{player_id}, data), nil)
+		if len(id_list) == 1 {
+			player_id := id_list[0]
+			connection.player_id = player_id
+			connection.login_data = data
+			g.players[player_id] = connection
+			if g.chat_server != nil {
+				data, _ := json.Marshal(nil)
+				g.chat_server.writeMessage(pack(PLAYER_CHAT_CONNECT, []int{player_id}, data), nil)
+			}
+			connection.writeMessage(pack(NOTICE_INIT, []int{player_id}, body), nil)
+		} else {
+			var data = make(map[string]interface{})
+			json.Unmarshal(body, &data)
+			error := data["error"].(string)
+			log.Printf("onPlayerConnect error:", error)
+			if error == "player-not-found" {
+				connection.do_close(4005, "session failed")
+			} else if error == "version-error" {
+				connection.do_close(4010, "Version Error")
+			} else if error == "server-offline" {
+				connection.do_close(4008, "server close")
+			} else if strings.HasPrefix(error, "forbid-player") {
+				time_str := strings.Replace(error, "forbid-player", "", -1)
+				connection.do_close(4004, time_str)
+			} else {
+				connection.do_close(4003, "data invalid")
+			}
 		}
-		connection.writeMessage(pack(NOTICE_INIT, []int{player_id}, body), nil)
 	})
 }
 
@@ -241,9 +261,9 @@ func (g *GatewayManager) remove_room_server(server *ServerConnection) {
 	}
 }
 
-func (g *GatewayManager) gateway_kick(player_id int, reason string) {
+func (g *GatewayManager) gateway_kick(player_id int, code int, reason string) {
 	connection, ok := g.players[player_id]
 	if ok {
-		connection.do_close()
+		connection.do_close(code, reason)
 	}
 }
