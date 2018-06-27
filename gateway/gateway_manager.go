@@ -14,9 +14,10 @@ type GatewayManager struct {
 	tag           string
 	runtime       string
 	master_server *ServerConnection
-	players       map[int]*PlayerConnect
-	room_servers  map[string]*ServerConnection
+	players       *sync.Map
+	room_servers  *sync.Map
 	chat_server   *ServerConnection
+	receive       chan MessageInfo
 }
 
 var manager *GatewayManager
@@ -25,8 +26,9 @@ var once sync.Once
 func Gateway() *GatewayManager {
 	once.Do(func() {
 		manager = &GatewayManager{}
-		manager.players = make(map[int]*PlayerConnect)
-		manager.room_servers = make(map[string]*ServerConnection)
+		manager.players = new(sync.Map)
+		manager.room_servers = new(sync.Map)
+		manager.receive = make(chan MessageInfo, 256)
 	})
 	return manager
 }
@@ -35,9 +37,19 @@ func (g *GatewayManager) init(runtime string, identifier string, tag string) {
 	g.identifier = identifier
 	g.tag = tag
 	g.runtime = runtime
+	go g.process()
 	go g.update(time.Second)
 	//go g.Check(time.Second*5)
 	//go g.Monitor(time.Second*300)
+}
+
+func (g *GatewayManager) process() {
+	for {
+		select {
+		case info := <-g.receive:
+			g.onServerMessage(info.c, info.msg, info.cid)
+		}
+	}
 }
 
 func (g *GatewayManager) update(second time.Duration) {
@@ -53,7 +65,7 @@ func (g *GatewayManager) onMasterConnect(server *ServerConnection) {
 
 func (g *GatewayManager) onServerMessage(server *ServerConnection, message []byte, cid []byte) {
 	cmd, id_list, body := unpack(message)
-
+	// log.Printf("onServerMessage", cmd, id_list, body)
 	if cmd == PLAYER_PING {
 
 	} else if cmd == NOTICE_PING {
@@ -72,14 +84,19 @@ func (g *GatewayManager) onServerMessage(server *ServerConnection, message []byt
 		msg := pack(cmd, nil, body)
 
 		if cmd == NOTICE_SPEAKER || cmd == NOTICE_CONFIG_CHANGE || cmd == NOTICE_SNATCH_UPDATE {
-			for _, connection := range g.players {
-				connection.writeMessage(msg, cid)
-			}
-
+			g.players.Range(func(key, value interface{}) bool {
+				conn := value.(*PlayerConnect)
+				conn.writeMessage(msg, cid)
+				return true
+			})
+			// for _, connection := range g.players {
+			// 	connection.writeMessage(msg, cid)
+			// }
 		} else {
 			for _, player_id := range id_list {
-				connection, ok := g.players[player_id]
+				value, ok := g.players.Load(player_id)
 				if ok {
+					connection := value.(*PlayerConnect)
 					if cmd == NOTICE_ROOM_JOIN {
 						connection.room_server = server.identifier
 						var data = make(map[string]interface{})
@@ -98,7 +115,7 @@ func (g *GatewayManager) onServerMessage(server *ServerConnection, message []byt
 }
 
 func (g *GatewayManager) onPlayerMessage(player_id int, msg []byte, cid []byte) {
-	cmd, _, body := unpack(msg)
+	cmd, id_list, body := unpack(msg)
 	if cmd == PLAYER_BALL {
 		return
 	}
@@ -108,9 +125,23 @@ func (g *GatewayManager) onPlayerMessage(player_id int, msg []byte, cid []byte) 
 	} else if cmd > MASTER_COMMAND {
 		server = g.master_server
 	} else if cmd > ROOM_COMMAND {
-		connection, _ := g.players[player_id]
-		if connection.room_server != "" {
-			server = g.room_servers[connection.room_server]
+		value, ok := g.players.Load(player_id)
+		if ok {
+			connection := value.(*PlayerConnect)
+			if connection.room_server != "" {
+				value2, ok := g.room_servers.Load(connection.room_server)
+				if ok {
+					server = value2.(*ServerConnection)
+				}
+			}
+		}
+	} else {
+		// panic(errors.New("unknown-cmd"))
+		value, ok := g.players.Load(player_id)
+		if ok {
+			connection := value.(*PlayerConnect)
+			err, _ := json.Marshal(map[string]string{"error": "unknown-cmd"})
+			connection.writeMessage(pack(cmd, id_list, err), cid)
 		}
 	}
 	if server != nil {
@@ -119,6 +150,10 @@ func (g *GatewayManager) onPlayerMessage(player_id int, msg []byte, cid []byte) 
 }
 
 func (g *GatewayManager) onPlayerConnect(connection *PlayerConnect) {
+	if g.master_server.conn == nil {
+		connection.do_close(4008, "server close")
+	}
+
 	device := connection.get_cookie("deviceId")
 	account := connection.get_cookie("account")
 	session := connection.get_cookie("session")
@@ -155,9 +190,16 @@ func (g *GatewayManager) onPlayerConnect(connection *PlayerConnect) {
 		_, id_list, body := unpack(msg)
 		if len(id_list) == 1 {
 			player_id := id_list[0]
+			old_conn_value, ok := g.players.Load(player_id)
+			log.Printf("old connection", ok)
+			if ok {
+				old_conn := old_conn_value.(*PlayerConnect)
+				old_conn.do_close(4002, "self kick")
+				old_conn.player_id = 0
+			}
 			connection.player_id = player_id
 			connection.login_data = data
-			g.players[player_id] = connection
+			g.players.Store(player_id, connection)
 			if g.chat_server != nil {
 				data, _ := json.Marshal(nil)
 				g.chat_server.writeMessage(pack(PLAYER_CHAT_CONNECT, []int{player_id}, data), nil)
@@ -190,15 +232,16 @@ func (g *GatewayManager) onPlayerDisconnect(connection *PlayerConnect) {
 		data, _ := json.Marshal(nil)
 		g.master_server.writeMessage(pack(PLAYER_DISCONNECT, []int{player_id}, data), nil)
 		if connection.room_server != "" {
-			room_server, ok := g.room_servers[connection.room_server]
+			value, ok := g.room_servers.Load(connection.room_server)
 			if ok {
+				room_server := value.(*ServerConnection)
 				room_server.writeMessage(pack(PLAYER_DISCONNECT, []int{player_id}, data), nil)
 			}
 		}
 		if g.chat_server != nil {
 			g.chat_server.writeMessage(pack(PLAYER_CHAT_DISCONNECT, []int{player_id}, data), nil)
 		}
-		delete(g.players, player_id)
+		g.players.Delete(player_id)
 		connection.player_id = 0
 		log.Printf("Player disconnection:", player_id)
 	}
@@ -207,20 +250,36 @@ func (g *GatewayManager) onPlayerDisconnect(connection *PlayerConnect) {
 func (g *GatewayManager) gateway_servers(servers map[string]interface{}) {
 	room_servers := servers["rooms"].(map[string]interface{})
 
-	for identifier, server := range g.room_servers {
-		server_id := identifier[strings.Index(identifier, "_")+1:]
+	g.room_servers.Range(func(key, value interface{}) bool {
+		identifier := key.(string)
+		server := value.(*ServerConnection)
+		server_id := identifier[strings.Index(identifier, "-")+1:]
+		log.Printf("gateway_servers server_id", server_id)
+		log.Printf("gateway_servers room_servers", room_servers)
 		_, ok := room_servers[server_id]
 		if !ok {
+			log.Printf("gateway_servers server.id", server.identifier)
 			g.remove_room_server(server)
 		}
-	}
+		return true
+	})
+	// for identifier, server := range g.room_servers {
+	// 	server_id := identifier[strings.Index(identifier, "-")+1:]
+	// 	log.Printf("gateway_servers server_id", server_id)
+	// 	log.Printf("gateway_servers room_servers", room_servers)
+	// 	_, ok := room_servers[server_id]
+	// 	if !ok {
+	// 		log.Printf("gateway_servers server.id", server.identifier)
+	// 		g.remove_room_server(server)
+	// 	}
+	// }
 
 	for server_id, server_tag := range room_servers {
 		if server_tag != g.tag {
 			continue
 		}
 		identifier := fmt.Sprintf("%s-%s", g.identifier, server_id)
-		_, ok := g.room_servers[identifier]
+		_, ok := g.room_servers.Load(identifier)
 		if !ok {
 			conn := NewServerConnection(identifier, g.tag, server_id)
 			g.add_room_server(conn)
@@ -245,25 +304,29 @@ func (g *GatewayManager) gateway_servers(servers map[string]interface{}) {
 
 func (g *GatewayManager) add_room_server(server *ServerConnection) {
 	log.Printf("add_room_server", server.identifier)
-	old_conn, ok := g.room_servers[server.identifier]
+	value, ok := g.room_servers.Load(server.identifier)
 	if ok {
+		old_conn := value.(*ServerConnection)
 		old_conn.do_close()
 	}
-	g.room_servers[server.identifier] = server
+	g.room_servers.Store(server.identifier, server)
 }
 
 func (g *GatewayManager) remove_room_server(server *ServerConnection) {
 	log.Printf("remove_room_server", server.identifier)
-	old_conn, ok := g.room_servers[server.identifier]
+	value, ok := g.room_servers.Load(server.identifier)
 	if ok {
+		old_conn := value.(*ServerConnection)
 		old_conn.do_close()
-		delete(g.room_servers, server.identifier)
+		g.room_servers.Delete(server.identifier)
 	}
 }
 
 func (g *GatewayManager) gateway_kick(player_id int, code int, reason string) {
-	connection, ok := g.players[player_id]
+	log.Printf("gateway_kick", player_id, reason)
+	value, ok := g.players.Load(player_id)
 	if ok {
+		connection := value.(*PlayerConnect)
 		connection.do_close(code, reason)
 	}
 }

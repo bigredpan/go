@@ -21,6 +21,7 @@ func playerHandle(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, message, err := c.ReadMessage()
 		if err != nil {
+			log.Printf("playerHandle read err:", err)
 			p.onDisconnect(err)
 			break
 		}

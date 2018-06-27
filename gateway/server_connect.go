@@ -12,6 +12,25 @@ import (
 	"time"
 )
 
+const (
+	// Time allowed to write a message to the peer.
+	writeWait = 10 * time.Second
+
+	// Time allowed to read the next pong message from the peer.
+	pongWait = 5 * time.Second
+
+	// Send pings to peer with this period. Must be less than pongWait.
+	pingPeriod = (pongWait * 9) / 10
+
+	// Maximum message size allowed from peer.
+	maxMessageSize = 512
+)
+
+var (
+	newline = []byte{'\n'}
+	space   = []byte{' '}
+)
+
 type ServerConnection struct {
 	identifier string
 	tag        string
@@ -19,6 +38,7 @@ type ServerConnection struct {
 	conn       *websocket.Conn
 	ping       int64
 	ticker     *time.Ticker
+	send       chan []byte
 }
 
 func NewServerConnection(id string, tag string, host string) *ServerConnection {
@@ -26,6 +46,7 @@ func NewServerConnection(id string, tag string, host string) *ServerConnection {
 	m.identifier = id
 	m.tag = tag
 	m.host = host
+	m.send = make(chan []byte, 256)
 	return m
 }
 
@@ -44,40 +65,91 @@ func (c *ServerConnection) connect() {
 		return
 	}
 	c.onConnect()
-	go c.heart(time.Second * 5)
+	go c.writePump()
 	go c.update()
 }
 
 func (c *ServerConnection) do_close() {
-	c.conn.Close()
+	if c.conn != nil {
+		c.conn.Close()
+	}
 }
 
 func (c *ServerConnection) reconnect() {
 	time.AfterFunc(2*time.Second, c.connect)
 }
 
-func (c *ServerConnection) heart(second time.Duration) {
-	c.ticker = time.NewTicker(second)
-	for _ = range c.ticker.C {
-		data, _ := json.Marshal([2]int64{time.Now().Unix(), c.ping})
-		msg := pack(PLAYER_PING, nil, data)
-		if c.conn != nil {
-			c.conn.WriteMessage(websocket.BinaryMessage, msg)
+func (c *ServerConnection) writePump() {
+	c.ticker = time.NewTicker(pingPeriod)
+	defer func() {
+		log.Printf("writePump defer")
+		c.ticker.Stop()
+		c.conn.Close()
+	}()
+	for {
+		select {
+		case message, ok := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if !ok {
+				// The hub closed the channel.
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				log.Printf("writePump return 1")
+				return
+			}
+
+			err := c.conn.WriteMessage(websocket.BinaryMessage, message)
+			if err != nil {
+				log.Println("ServerConnection writePump err:", err)
+				return
+			}
+
+			// w, err := c.conn.NextWriter(websocket.TextMessage)
+			// if err != nil {
+			// 	log.Printf("writePump return 2")
+			// 	return
+			// }
+			// w.Write(message)
+
+			// Add queued chat messages to the current websocket message.
+			// n := len(c.send)
+			// for i := 0; i < n; i++ {
+			// 	w.Write(newline)
+			// 	w.Write(<-c.send)
+			// }
+
+			// if err := w.Close(); err != nil {
+			// 	log.Printf("writePump return 3")
+			// 	return
+			// }
+		case <-c.ticker.C:
+			data, _ := json.Marshal([2]int64{time.Now().Unix(), c.ping})
+			msg := pack(PLAYER_PING, nil, data)
+			if c.conn != nil {
+				c.conn.WriteMessage(websocket.BinaryMessage, msg)
+			}
 		}
 	}
 }
 
 func (c *ServerConnection) update() {
+	defer func() {
+		c.conn.Close()
+		c.onDisconnect()
+		c.reconnect()
+	}()
 	for {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
-			log.Printf("read:", err)
-			c.onDisconnect()
-			c.reconnect()
+			log.Printf("ServerConnection read err:", err)
+			log.Printf("ServerConnection identifier:", c.identifier)
 			return
 		}
+		// defer func() {
+		// 	if p := recover(); p != nil {
+		// 		log.Printf("panic recover! p: %v", p)
+		// 	}
+		// }()
 		c.onReadMessage(message)
-
 	}
 }
 
@@ -89,14 +161,18 @@ func (c *ServerConnection) onConnect() {
 
 func (c *ServerConnection) onDisconnect() {
 	log.Printf("onDisconnect", c.identifier)
-	c.conn = nil
 	c.ticker.Stop()
-	c.ticker = nil
 }
 
 type fetchFunc func(data []byte)
 
 var fetchMap = map[string]fetchFunc{}
+
+type MessageInfo struct {
+	c   *ServerConnection
+	msg []byte
+	cid []byte
+}
 
 func (c *ServerConnection) onReadMessage(message []byte) {
 	tag := message[0]
@@ -111,17 +187,14 @@ func (c *ServerConnection) onReadMessage(message []byte) {
 			return
 		}
 		s_cid = message[0:SERVER_CID_HEADER_SIZE]
-		// Gateway().onServerMessage(msg, s_cid)
 	} else if tag == PLAYER_CID_TAG[0] {
 		msg = message[PLAYER_CID_HEADER_SIZE:]
-		// cmd, id_list, body := unpack(msg)
 		s_cid = message[0:PLAYER_CID_HEADER_SIZE]
-		// Gateway().onServerMessage(msg, p_cid)
 	} else {
 		msg = message
 		s_cid = nil
 	}
-	Gateway().onServerMessage(c, msg, s_cid)
+	Gateway().receive <- MessageInfo{c, msg, s_cid}
 }
 
 func (c *ServerConnection) writeMessage(message []byte, cid []byte) {
@@ -131,24 +204,16 @@ func (c *ServerConnection) writeMessage(message []byte, cid []byte) {
 		buf.Write(message)
 		message = buf.Bytes()
 	}
-	err := c.conn.WriteMessage(websocket.BinaryMessage, message)
-	if err != nil {
-		log.Println("write:", err)
-	}
+	c.send <- message
 }
 
 func (c *ServerConnection) fetch(message []byte, callback fetchFunc) {
 	cid := make([]byte, 16)
 	rand.Read(cid)
 	fetchMap[string(cid)] = callback
-
 	buf := new(bytes.Buffer)
 	buf.Write(SERVER_CID_TAG)
 	buf.Write(cid)
 	buf.Write(message)
-
-	err := c.conn.WriteMessage(websocket.BinaryMessage, buf.Bytes())
-	if err != nil {
-		log.Println("fetch:", err)
-	}
+	c.send <- buf.Bytes()
 }
