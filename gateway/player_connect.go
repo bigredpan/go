@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"container/list"
 	"encoding/json"
 	"github.com/gorilla/websocket"
 	"log"
@@ -15,9 +16,10 @@ func playerHandle(w http.ResponseWriter, r *http.Request) {
 		log.Print("upgrade:", err)
 		return
 	}
-	p := PlayerConnect{c, w, r, 0, nil, "", "", time.Now().Unix(), 0xff}
+	var p = NewPlayerConnect(c, w, r)
 	p.onConnect()
 	defer p.conn.Close()
+	go p.check()
 	for {
 		_, message, err := c.ReadMessage()
 		if err != nil {
@@ -39,6 +41,32 @@ type PlayerConnect struct {
 	room        string
 	last_pong   int64
 	ping        int32
+	ball        chan int64
+	ball_list   *list.List
+}
+
+func NewPlayerConnect(c *websocket.Conn, w http.ResponseWriter, r *http.Request) *PlayerConnect {
+	p := new(PlayerConnect)
+	p.conn = c
+	p.writer = w
+	p.request = r
+	p.last_pong = time.Now().Unix()
+	p.ping = 0xff
+	p.ball = make(chan int64, 256)
+	p.ball_list = list.New()
+	return p
+}
+
+func (p *PlayerConnect) check() {
+	for {
+		select {
+		case t := <-p.ball:
+			log.Printf("t", t)
+			// p.ball_list.PushBack(t)
+			// if p.ball_list.Len > 5{
+			// }
+		}
+	}
 }
 
 func (p *PlayerConnect) do_close(code int, msg string) {
@@ -75,8 +103,13 @@ func (p *PlayerConnect) onMessage(message []byte) {
 		p.on_client_ping(msg)
 	} else if cmd == NOTICE_PING {
 
+	} else if cmd == PLAYER_BALL {
+		p.ball <- time.Now().Unix()
+		// g.player_ball(connection)
+		p.writeMessage(msg, nil)
+		return
 	} else {
-		Gateway().onPlayerMessage(p.player_id, msg, p_cid)
+		Gateway().onPlayerMessage(p, msg, p_cid)
 	}
 }
 

@@ -96,7 +96,7 @@ func (c *ServerConnection) writePump() {
 				log.Printf("writePump return 1")
 				return
 			}
-
+			log.Printf("ServerConnection write", message)
 			err := c.conn.WriteMessage(websocket.BinaryMessage, message)
 			if err != nil {
 				log.Println("ServerConnection writePump err:", err)
@@ -122,9 +122,11 @@ func (c *ServerConnection) writePump() {
 			// 	return
 			// }
 		case <-c.ticker.C:
+			log.Printf("pint kicker")
 			data, _ := json.Marshal([2]int64{time.Now().Unix(), c.ping})
 			msg := pack(PLAYER_PING, nil, data)
 			if c.conn != nil {
+				log.Printf("pint send", c.host)
 				c.conn.WriteMessage(websocket.BinaryMessage, msg)
 			}
 		}
@@ -133,6 +135,7 @@ func (c *ServerConnection) writePump() {
 
 func (c *ServerConnection) update() {
 	defer func() {
+		c.ticker.Stop()
 		c.conn.Close()
 		c.onDisconnect()
 		c.reconnect()
@@ -161,7 +164,7 @@ func (c *ServerConnection) onConnect() {
 
 func (c *ServerConnection) onDisconnect() {
 	log.Printf("onDisconnect", c.identifier)
-	c.ticker.Stop()
+	// c.ticker.Stop()
 }
 
 type fetchFunc func(data []byte)

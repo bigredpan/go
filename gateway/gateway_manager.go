@@ -114,35 +114,28 @@ func (g *GatewayManager) onServerMessage(server *ServerConnection, message []byt
 	}
 }
 
-func (g *GatewayManager) onPlayerMessage(player_id int, msg []byte, cid []byte) {
+func (g *GatewayManager) onPlayerMessage(connection *PlayerConnect, msg []byte, cid []byte) {
+	player_id := connection.player_id
 	cmd, id_list, body := unpack(msg)
 	if cmd == PLAYER_BALL {
 		return
 	}
+
 	var server *ServerConnection = nil
 	if cmd > CHAT_COMMAND {
 		server = g.chat_server
 	} else if cmd > MASTER_COMMAND {
 		server = g.master_server
 	} else if cmd > ROOM_COMMAND {
-		value, ok := g.players.Load(player_id)
-		if ok {
-			connection := value.(*PlayerConnect)
-			if connection.room_server != "" {
-				value2, ok := g.room_servers.Load(connection.room_server)
-				if ok {
-					server = value2.(*ServerConnection)
-				}
+		if connection.room_server != "" {
+			value2, ok := g.room_servers.Load(connection.room_server)
+			if ok {
+				server = value2.(*ServerConnection)
 			}
 		}
 	} else {
-		// panic(errors.New("unknown-cmd"))
-		value, ok := g.players.Load(player_id)
-		if ok {
-			connection := value.(*PlayerConnect)
-			err, _ := json.Marshal(map[string]string{"error": "unknown-cmd"})
-			connection.writeMessage(pack(cmd, id_list, err), cid)
-		}
+		err, _ := json.Marshal(map[string]string{"error": "unknown-cmd"})
+		connection.writeMessage(pack(cmd, id_list, err), cid)
 	}
 	if server != nil {
 		server.writeMessage(pack(cmd, []int{player_id}, body), cid)
@@ -329,4 +322,8 @@ func (g *GatewayManager) gateway_kick(player_id int, code int, reason string) {
 		connection := value.(*PlayerConnect)
 		connection.do_close(code, reason)
 	}
+}
+
+func (g *GatewayManager) player_ball(conn *PlayerConnect) {
+
 }
