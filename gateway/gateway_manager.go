@@ -184,7 +184,7 @@ func (g *GatewayManager) onPlayerConnect(connection *PlayerConnect) {
 		if len(id_list) == 1 {
 			player_id := id_list[0]
 			old_conn_value, ok := g.players.Load(player_id)
-			log.Printf("old connection", ok)
+			log.Printf("old connection", player_id, ok)
 			if ok {
 				old_conn := old_conn_value.(*PlayerConnect)
 				old_conn.do_close(4002, "self kick")

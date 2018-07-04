@@ -31,6 +31,13 @@ var (
 	space   = []byte{' '}
 )
 
+var cstDialer = websocket.Dialer{
+	Subprotocols:     []string{"p1", "p2"},
+	ReadBufferSize:   4096,
+	WriteBufferSize:  4096,
+	HandshakeTimeout: 30 * time.Second,
+}
+
 type ServerConnection struct {
 	identifier string
 	tag        string
@@ -53,7 +60,7 @@ func NewServerConnection(id string, tag string, host string) *ServerConnection {
 func (c *ServerConnection) connect() {
 	u := url.URL{Scheme: "ws", Host: c.host, Path: "/gateway"}
 	log.Printf("u", u.String())
-	var dialer *websocket.Dialer
+	dialer := cstDialer
 	cookie := []string{fmt.Sprintf("id=%s;tag=%s", c.identifier, c.tag)}
 	header := map[string][]string{"Cookie": cookie}
 	conn, _, err := dialer.Dial(u.String(), header)
@@ -81,8 +88,10 @@ func (c *ServerConnection) reconnect() {
 
 func (c *ServerConnection) writePump() {
 	c.ticker = time.NewTicker(pingPeriod)
+	pingTicker := time.NewTicker(pingPeriod)
 	defer func() {
 		log.Printf("writePump defer")
+		pingTicker.Stop()
 		c.ticker.Stop()
 		c.conn.Close()
 	}()
@@ -103,12 +112,16 @@ func (c *ServerConnection) writePump() {
 				return
 			}
 
-			// w, err := c.conn.NextWriter(websocket.TextMessage)
+			// w, err := c.conn.NextWriter(websocket.BinaryMessage)
 			// if err != nil {
-			// 	log.Printf("writePump return 2")
+			// 	log.Printf("writePump return 2", err)
 			// 	return
 			// }
-			// w.Write(message)
+			// _, err = w.Write(message)
+			// if err != nil {
+			// 	log.Printf("writePump return 2.1", err)
+			// 	return
+			// }
 
 			// Add queued chat messages to the current websocket message.
 			// n := len(c.send)
@@ -118,7 +131,7 @@ func (c *ServerConnection) writePump() {
 			// }
 
 			// if err := w.Close(); err != nil {
-			// 	log.Printf("writePump return 3")
+			// 	log.Printf("writePump return 3", err)
 			// 	return
 			// }
 		case <-c.ticker.C:
@@ -126,8 +139,13 @@ func (c *ServerConnection) writePump() {
 			data, _ := json.Marshal([2]int64{time.Now().Unix(), c.ping})
 			msg := pack(PLAYER_PING, nil, data)
 			if c.conn != nil {
-				log.Printf("pint send", c.host)
+				log.Printf("%v pint send %v", c.host, time.Now().Unix())
 				c.conn.WriteMessage(websocket.BinaryMessage, msg)
+			}
+		case <-pingTicker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
 			}
 		}
 	}
